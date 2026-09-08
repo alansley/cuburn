@@ -13,7 +13,7 @@ def _make_palette_src():
     values[:,3] = 3
     # leave a newline in to make sure those get stripped
     return """<palettes><palette number="0" name="synthetic" data="%s
-"/></palettes>""" % binascii.b2a_hex(values.tostring())
+"/></palettes>""" % binascii.b2a_hex(values.tobytes()).decode('ascii')
 
 def _make_genome_src(palette=False):
     src = """
@@ -36,8 +36,8 @@ class XMLPaletteParserTest(unittest.TestCase):
         parser = convert.XMLPaletteParser(_make_palette_src())
         self.assertIn('synthetic', parser.names)
         self.assertIn(0, parser.numbers)
-        self.assertEquals([0,1/255.,2/255.,3/255.], list(parser.numbers[0][0]))
-        self.assertEquals([1,1/255.,2/255.,3/255.], list(parser.numbers[0][255]))
+        self.assertEqual([0,1/255.,2/255.,3/255.], list(parser.numbers[0][0]))
+        self.assertEqual([1,1/255.,2/255.,3/255.], list(parser.numbers[0][255]))
 
 class ConversionTest(unittest.TestCase):
     def test_parse(self):
@@ -45,7 +45,7 @@ class ConversionTest(unittest.TestCase):
         converted = convert.flam3_to_node(parsed[0])
         palette = converted.pop('palette')
         self.maxDiff = None
-        self.assertEquals(dict(
+        self.assertEqual(dict(
             type='node',
             author=dict(url='http://test.com', name='strobe'),
             camera=dict(dither_width=1.0, scale=0.03125,
@@ -64,8 +64,8 @@ class ConversionTest(unittest.TestCase):
                         offset=dict(x=-0.5, y=-0.6)),
                     weight=0.1)
             }), converted)
-        self.assertEquals('rgb8', palette[0])
-        self.assertEquals('AQID////', palette[1][:8])
+        self.assertEqual('rgb8', palette[0])
+        self.assertEqual('AQID////', palette[1][:8])
 
     def test_parse_stock_palette(self):
         try:
@@ -76,6 +76,6 @@ class ConversionTest(unittest.TestCase):
         parsed = convert.XMLGenomeParser.parse(_make_genome_src(True))
         converted = convert.flam3_to_node(parsed[0])
         palette = converted['palette']
-        self.assertEquals('rgb8', palette[0])
-        self.assertEquals('ALnqAMHu', palette[1][:8])
+        self.assertEqual('rgb8', palette[0])
+        self.assertEqual('ALnqAMHu', palette[1][:8])
 

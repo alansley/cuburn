@@ -1,5 +1,5 @@
-from util import devlib
-from color import yuvlib
+from .util import devlib
+from .color import yuvlib
 
 texshearlib = devlib(defs=r'''
 // Filter directions specified in degrees, using image/texture addressing
@@ -19,8 +19,11 @@ __constant__ float2 addressing_patterns[16] = {
 // Mon dieu! A C++ feature? Gotta close the "extern C" added by the compiler.
 }
 
+// Read from a source buffer with wrap-around addressing, offset along one of
+// the fixed addressing patterns above. Replaces the legacy texture-reference
+// implementation (removed in CUDA 12), using plain loads instead.
 template <typename T> __device__ T
-tex_shear(texture<T, cudaTextureType2D> ref, int pattern,
+tex_shear(const T* src, int src_w, int src_h, int pattern,
           float x, float y, float radius) {
     float2 scale = addressing_patterns[pattern];
     float i = scale.x * radius, j = scale.y * radius;
@@ -31,7 +34,9 @@ tex_shear(texture<T, cudaTextureType2D> ref, int pattern,
         "cvt.rni.ftz.f32.f32    %0, %0;\n\t"
         "cvt.rni.ftz.f32.f32    %1, %1;\n\t"
         "}\n" : "+f"(i), "+f"(j));
-    return tex2D(ref, x + i, y + j);
+    int xi = ((int)(x + i) % src_w + src_w) % src_w;
+    int yi = ((int)(y + j) % src_h + src_h) % src_h;
+    return src[(size_t)yi * src_w + xi];
 }
 
 extern "C" {
@@ -91,19 +96,16 @@ logencode(float4 *dst, const float4 *src, float degamma) {
 ''')
 
 denblurlib = devlib(deps=[texshearlib], decls='''
-texture<float4, cudaTextureType2D> chan4_src;
-texture<float,  cudaTextureType2D> chan1_src;
-
 // Call the Python function set_blur_width() to override these defaults.
 __constant__ float gauss_coefs[7] = {
     0.00443305f,  0.05400558f,  0.24203623f,  0.39905028f,
     0.24203623f,  0.05400558f,  0.00443305f
 };
 ''', defs=r'''
-// Apply a Gaussian-esque blur to the density channel of the texture in
-// ``chan4_src`` in the horizontal direction, and write it to ``dst``, a
-// one-channel buffer.
-__global__ void den_blur(float *dst, int pattern, int upsample) {
+// Apply a Gaussian-esque blur to the density channel of ``src`` in the
+// horizontal direction, and write it to ``dst``, a one-channel buffer.
+__global__ void den_blur(const float4 *src, float *dst, int pattern,
+                         int upsample, int src_w, int src_h) {
     GET_IDX_2(xi, yi, gi);
     float x = xi, y = yi;
 
@@ -111,13 +113,15 @@ __global__ void den_blur(float *dst, int pattern, int upsample) {
 
     #pragma unroll
     for (int i = 0; i < 7; i++)
-        den += tex_shear(chan4_src, pattern, x, y, (i - 3) << upsample).w
+        den += tex_shear(src, src_w, src_h, pattern, x, y,
+                         (i - 3) << upsample).w
              * gauss_coefs[i];
     dst[gi] = den;
 }
 
-// As den_blur, but with the one-channel texture as source
-__global__ void den_blur_1c(float *dst, int pattern, int upsample) {
+// As den_blur, but with a one-channel source
+__global__ void den_blur_1c(const float *src, float *dst, int pattern,
+                            int upsample, int src_w, int src_h) {
     GET_IDX_2(xi, yi, gi);
     float x = xi, y = yi;
 
@@ -125,7 +129,8 @@ __global__ void den_blur_1c(float *dst, int pattern, int upsample) {
 
     #pragma unroll
     for (int i = 0; i < 7; i++)
-        den += tex_shear(chan1_src, pattern, x, y, (i - 3) << upsample)
+        den += tex_shear(src, src_w, src_h, pattern, x, y,
+                         (i - 3) << upsample)
              * gauss_coefs[i];
     dst[gi] = den;
 }
@@ -133,7 +138,8 @@ __global__ void den_blur_1c(float *dst, int pattern, int upsample) {
 
 
 fullblurlib = devlib(deps=[denblurlib], defs=r'''
-__global__ void full_blur(float4 *dst, int pattern, int upsample) {
+__global__ void full_blur(const float4 *src, float4 *dst, int pattern,
+                          int upsample, int src_w, int src_h) {
     GET_IDX_2(xi, yi, gi);
     float x = xi, y = yi;
 
@@ -141,7 +147,8 @@ __global__ void full_blur(float4 *dst, int pattern, int upsample) {
 
     #pragma unroll
     for (int i = 0; i < 7; i++) {
-        float4 pix = tex_shear(chan4_src, pattern, x, y, (i - 3) << upsample);
+        float4 pix = tex_shear(src, src_w, src_h, pattern, x, y,
+                               (i - 3) << upsample);
         val.x += pix.x * gauss_coefs[i];
         val.y += pix.y * gauss_coefs[i];
         val.z += pix.z * gauss_coefs[i];
@@ -164,8 +171,9 @@ bilaterallib = devlib(deps=[logscalelib, texshearlib, denblurlib], defs=r'''
  *          tighten gradients. Zero and negative values OK.
  */
 __global__ void
-bilateral(float4 *dst, int pattern, int radius,
-          float sstd, float cstd, float dstd, float dpow, float gspeed)
+bilateral(float4 *dst, const float4 *src, const float *grad, int pattern,
+          int radius, float sstd, float cstd, float dstd, float dpow,
+          float gspeed, int src_w, int src_h)
 {
     GET_IDX_2(xi, yi, gi);
     float x = xi, y = yi;
@@ -184,7 +192,7 @@ bilateral(float4 *dst, int pattern, int radius,
 
     // Gather the center point, and pre-average the color values for faster
     // comparison.
-    float4 cen = tex2D(chan4_src, x, y);
+    float4 cen = src[gi];
     float cdrcp = 1.0f / (cen.w + 1.0e-6f);
     cen.x *= cdrcp;
     cen.y *= cdrcp;
@@ -198,13 +206,13 @@ bilateral(float4 *dst, int pattern, int radius,
     // Be extra-sure spatial coeffecients have been written
     __syncthreads();
 
-    float4 pix = tex_shear(chan4_src, pattern, x, y, -radius - 1.0f);
-    float4 next = tex_shear(chan4_src, pattern, x, y, -radius);
+    float4 pix = tex_shear(src, src_w, src_h, pattern, x, y, -radius - 1.0f);
+    float4 next = tex_shear(src, src_w, src_h, pattern, x, y, -radius);
 
     for (float r = -radius; r <= radius; r++) {
         float prev = pix.w;
         pix = next;
-        next = tex_shear(chan4_src, pattern, x, y, r + 1.0f);
+        next = tex_shear(src, src_w, src_h, pattern, x, y, r + 1.0f);
 
         // This initial factor is arbitrary, but seems to do a decent job at
         // preventing excessive bleed-out from points inside an empty region.
@@ -239,7 +247,7 @@ bilateral(float4 *dst, int pattern, int radius,
         //
         // Note that both the gradient and the blurred weight are calculated
         // in one dimension, along the current sampling vector.
-        float avg = tex_shear(chan1_src, pattern, x, y, r);
+        float avg = tex_shear(grad, src_w, src_h, pattern, x, y, r);
         float gradfact = (next.w - prev) / (avg + 1.0e-6f);
         if (r < 0) gradfact = -gradfact;
         gradfact = exp2f(-exp2f(gspeed * gradfact));

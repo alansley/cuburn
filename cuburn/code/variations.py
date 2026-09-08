@@ -1,6 +1,6 @@
 import numpy as np
 
-from util import Template
+from .util import Template
 
 var_code = {}
 

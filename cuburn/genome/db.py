@@ -1,7 +1,8 @@
 import os
 import json
+import warnings
 
-import convert
+from . import convert
 
 class GenomeDB(object):
     """
@@ -85,4 +86,4 @@ if __name__ == "__main__":
     import sys
     gdb = connect(sys.argv[1])
     for i in sys.argv[2:]:
-        print convert.to_json(gdb.get_anim(i)[0])
+        print(convert.to_json(gdb.get_anim(i)[0]))

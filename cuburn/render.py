@@ -14,10 +14,9 @@ from numpy import float32 as f32, int32 as i32, uint32 as u32, uint64 as u64
 import pycuda.driver as cuda
 import pycuda.tools
 
-import filters
-import output
-from code import util, mwc, iter, interp, sort
-from code.util import ClsMod, devlib, filldptrlib, assemble_code, launch
+from . import filters, output
+from .code import util, mwc, iter, interp, sort
+from .code.util import ClsMod, devlib, filldptrlib, assemble_code, launch
 from cuburn.genome.util import palette_decode
 
 RenderedImage = namedtuple('RenderedImage', 'buf idx gpu_time')
@@ -127,7 +126,7 @@ class Framebuffers(object):
         will be synchronized before the old buffers are deallocated.
         """
         nbins = dim.ah * dim.astride
-        if self.nbins >= nbins: return
+        if self.nbins is not None and self.nbins >= nbins: return
         if self.nbins is not None: self.free()
         try:
             self.d_front  = cuda.mem_alloc(16 * nbins)
@@ -137,7 +136,7 @@ class Framebuffers(object):
             self.d_uleft  = cuda.mem_alloc(2  * nbins)
             self.d_uright = cuda.mem_alloc(2  * nbins)
             self.nbins = nbins
-        except cuda.MemoryError, e:
+        except cuda.MemoryError as e:
             # If a frame that's too large sneaks by the task distributor, we
             # don't want to kill the server, but we also don't want to leave
             # it stuck without any free memory to complete the next alloc.
@@ -216,11 +215,11 @@ class DevInfo(object):
     def __init__(self):
         self.d_params = cuda.mem_alloc(
                 self.ntemporal_samples * DevSrc.max_params * 4)
-        self.palette_surf_dsc = util.argset(cuda.ArrayDescriptor3D(),
-                height=self.palette_height, width=self.palette_width, depth=0,
-                format=cuda.array_format.SIGNED_INT32,
-                num_channels=2, flags=cuda.array3d_flags.SURFACE_LDST)
-        self.d_pal_array = cuda.Array(self.palette_surf_dsc)
+        # Flat pre-dithered palettes, one row per temporal slice. Each entry
+        # is a packed uint2 (Y+density, U+V). Replaces the legacy surface
+        # bound to a CUDA array.
+        self.d_flatpal = cuda.mem_alloc(self.palette_width *
+                                        self.palette_height * 8)
 
 class Renderer(object):
     # Unloading a module triggers a context sync. To keep the renderer
@@ -238,7 +237,7 @@ class Renderer(object):
     def load(self, cubin):
         if cubin in self._modrefs:
             return self._modrefs[cubin]
-        mod = cuda.module_from_buffer(self.cubin)
+        mod = cuda.module_from_buffer(cubin)
         if len(self._modrefs) > self.MAX_MODREFS:
             self._modrefs.clear()
         self._modrefs[cubin] = mod
@@ -292,10 +291,9 @@ class RenderManager(ClsMod):
         p_dim[:] = dim
         cuda.memcpy_htod_async(d_acc_size, p_dim, self.stream_a)
 
-        tref = self.mod.get_surfref('flatpal')
-        tref.set_array(self.info_a.d_pal_array, 0)
         launch('interp_palette_flat', self.mod, self.stream_a,
                 256, self.info_a.palette_height,
+                self.info_a.d_flatpal,
                 self.fb.d_rb, self.fb.d_seeds,
                 self.src_a.d_ptimes, self.src_a.d_pals,
                 f32(ts), f32(td / self.info_a.palette_height))
@@ -311,21 +309,18 @@ class RenderManager(ClsMod):
         infos = cuda.from_device(self.info_a.d_params,
                 (tsidx + 1, len(rdr.packer)), f32)
         for i, n in zip(infos[-1], rdr.packer.packed):
-            print '%60s %g' % ('_'.join(n), i)
+            print('%60s %g' % ('_'.join(n), i))
 
     def _iter(self, rdr, gnm, gprof, dim, tc):
-        tref = rdr.mod.get_surfref('flatpal')
-        tref.set_array(self.info_a.d_pal_array, 0)
-
         nbins = dim.ah * dim.astride
         fill = lambda b, s, v=i32(0): util.fill_dptr(
                 self.mod, b, s, stream=self.stream_a, value=v)
         fill(self.fb.d_front,  4 * nbins)
         fill(self.fb.d_left,   4 * nbins)
         fill(self.fb.d_right,  4 * nbins)
-        fill(self.fb.d_points, self.fb._len_d_points / 4, f32(np.nan))
-        fill(self.fb.d_uleft,  nbins / 2)
-        fill(self.fb.d_uright, nbins / 2)
+        fill(self.fb.d_points, self.fb._len_d_points // 4, f32(np.nan))
+        fill(self.fb.d_uleft,  nbins // 2)
+        fill(self.fb.d_uright, nbins // 2)
 
         nts = self.info_a.ntemporal_samples
         nsamps = (gprof.spp(tc) * dim.w * dim.h)
@@ -343,7 +338,8 @@ class RenderManager(ClsMod):
           launch('iter', rdr.mod, iter_stream_left, (32, 8, 1), (nts, n),
                  self.fb.d_front, self.fb.d_left,
                  self.fb.d_rb, self.fb.d_seeds, self.fb.d_points,
-                 self.fb.d_uleft, self.info_a.d_params)
+                 self.fb.d_uleft, self.info_a.d_params,
+                 self.info_a.d_flatpal)
           delta = time.time() - now
           if delta > 0.1:
             # More than 100ms passed attempting to launch. The GPU is likely
@@ -352,21 +348,21 @@ class RenderManager(ClsMod):
             # Do a blocking sync to free up resources. This may slightly reduce
             # parallelism but makes it a whole heck of a lot easier to keep
             # using the computer while things render.
-            print >> sys.stderr, 'Launches became blocking, synchronizing'
+            print('Launches became blocking, synchronizing', file=sys.stderr)
             iter_stream_right.synchronize()
 
           # Make sure the other stream is done flushing before we start
           iter_stream_left.wait_for_event(cuda.Event().record(iter_stream_right))
 
           launch('flush_atom', rdr.mod, iter_stream_left,
-                  (16, 16, 1), (dim.astride / 16, dim.ah / 16),
+                  (16, 16, 1), (dim.astride // 16, dim.ah // 16),
                   u64(self.fb.d_front), u64(self.fb.d_left),
                   u64(self.fb.d_uleft), i32(nbins))
 
           self.fb.flip_side()
           iter_stream_left, iter_stream_right = iter_stream_right, iter_stream_left
           nrounds -= n
-          block_size += block_size / 2
+          block_size += block_size // 2
 
         # Always wait on all events in the hidden stream before continuing on A
         self.stream_a.wait_for_event(cuda.Event().record(hidden_stream))

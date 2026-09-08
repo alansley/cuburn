@@ -299,7 +299,7 @@ def scalespline(default=1, min=0, max=None, d=None):
     return Spline(default, min, None, 'mag', None, d, False)
 def enum(choices, default=None, d=None):
     """Enum helper. 'choices' is a list or a space-separated string."""
-    if isinstance(choices, basestring):
+    if isinstance(choices, str):
         choices = choices.split()
     return Enum(choices, default, d)
 
@@ -318,7 +318,7 @@ def export_spec(spec):
     """
     if isinstance(spec, dict):
         return dict((k, export_spec(v)) for k, v in spec.items())
-    elif isinstance(spec, basestring):
+    elif isinstance(spec, str):
         return spec
     else:
         r = spec._asdict()

@@ -105,8 +105,8 @@ class ProfileTest(unittest.TestCase, util.ClsMod):
         w, h = self.dim.w, self.dim.h
         outs = np.empty((3, h, w), dtype='u2')
         cuda.memcpy_dtoh(outs, self.fb.d_back)
-        out_cr = outs[1,:h/4].reshape(h/2,w/2)
-        out_cb = outs[1,h/4:h/2].reshape(h/2,w/2)
+        out_cr = outs[1,:h//4].reshape(h//2,w//2)
+        out_cb = outs[1,h//4:h//2].reshape(h//2,w//2)
 
         # chroma blocking doesn't affect luma blocking
         self.assertTrue(outs[0,0,0] > 0)

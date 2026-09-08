@@ -5,10 +5,10 @@ from cuburn.genome import specs
 from cuburn.genome.util import resolve_spec
 from cuburn.genome.use import Wrapper, SplineEval
 
-import util
-from util import Template, assemble_code, devlib, binsearchlib, ringbuflib, snd
-from color import yuvlib
-from mwc import mwclib
+from . import util
+from .util import Template, assemble_code, devlib, binsearchlib, ringbuflib, snd
+from .color import yuvlib
+from .mwc import mwclib
 
 class _OrderedSet(object):
     """
@@ -366,9 +366,7 @@ float catmull_rom_mag(const float *times, const float *knots, float t) {
 }
 ''')
 
-palintlib = devlib(deps=[binsearchlib, ringbuflib, yuvlib, mwclib], decls='''
-surface<void, cudaSurfaceType2D> flatpal;
-''', defs=r'''
+palintlib = devlib(deps=[binsearchlib, ringbuflib, yuvlib, mwclib], defs=r'''
 __device__ float4
 interp_color(const float *times, const float4 *sources, float time)
 {
@@ -407,6 +405,7 @@ interp_color(const float *times, const float4 *sources, float time)
 }
 
 __global__ void interp_palette_flat(
+        uint2 *flatpal,
         ringbuf *rb, mwc_st *rctxs,
         const float *times, const float4 *sources,
         float tstart, float tstep)
@@ -428,7 +427,7 @@ __global__ void interp_palette_flat(
     out.y = (1 << 22) | (y << 4);
     out.x = (u << 18) | v;
 
-    surf2Dwrite(out, flatpal, 8 * threadIdx.x, blockIdx.x);
+    flatpal[blockIdx.x * blockDim.x + threadIdx.x] = out;
     rctxs[rb_incr(rb->tail, threadIdx.x)] = rctx;
 }
 ''')
@@ -454,8 +453,8 @@ if __name__ == "__main__":
     times = np.sort(np.concatenate(([-2.0, 0.0, 1.0, 3.0], np.random.rand(12))))
     knots = np.random.randn(16)
 
-    print times
-    print knots
+    print(times)
+    print(knots)
 
     evaltimes = np.float32(np.linspace(0, 1, 1024))
     sp = SplEval([x for k in zip(times, knots) for x in k])
@@ -471,4 +470,4 @@ if __name__ == "__main__":
     mod.get_function("test_cr")(cuda.In(dtimes), cuda.In(dknots),
             cuda.In(evaltimes), cuda.Out(dvals), block=(1024, 1, 1))
     for t, v, d in zip(evaltimes, vals, dvals):
-        print '%6f %8g %8g' % (t, v, d)
+        print('%6f %8g %8g' % (t, v, d))

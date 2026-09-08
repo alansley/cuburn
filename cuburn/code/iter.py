@@ -2,10 +2,9 @@
 The main iteration loop.
 """
 
-import variations
-import interp
-from util import Template, devlib, ringbuflib
-from mwc import mwclib
+from . import variations, interp
+from .util import Template, devlib, ringbuflib
+from .mwc import mwclib
 
 import cuburn.genome.specs
 
@@ -23,7 +22,7 @@ def precalc_densities(cp):
         float rsum = 1.0f / sum;
         sum = 0.0f;
 
-        {{for n in cp.xforms.keys()[:-1]}}
+        {{for n in list(cp.xforms.keys())[:-1]}}
         sum += den_{{n}} * rsum;
         {{cp._set('den_' + n)}} = sum;
         {{endfor}}
@@ -45,7 +44,7 @@ def precalc_chaos(cp):
         rsum = 1.0f / sum;
         sum = 0.0f;
 
-        {{for n in cp.xforms.keys()[:-1]}}
+        {{for n in list(cp.xforms.keys())[:-1]}}
         sum += den_{{p}}_{{n}} * rsum;
         {{cp._set('chaos_%s_%s' % (p, n))}} = sum;
         {{endfor}}
@@ -159,7 +158,8 @@ __global__ void
 iter(uint64_t out_ptr, uint64_t atom_ptr,
      ringbuf *rb, mwc_st *msts, float4 *points,
      const __restrict__ uint32_t *hotspots,
-     const __restrict__ iter_params *all_params)
+     const __restrict__ iter_params *all_params,
+     const __restrict__ uint2 *flatpal)
 {
     // load params to shared memory cooperatively
     const iter_params *global_params = &(all_params[blockIdx.x]);
@@ -229,7 +229,7 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
         }
 
 
-{{py:xk = cp.xforms.keys()}}
+{{py:xk = list(cp.xforms.keys())}}
 {{if chaos_used}}
 
         {{precalc_chaos(cp)}}
@@ -329,6 +329,17 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
         }
 
         uint32_t i = iy * acc_size.astride + ix;
+
+        // Dither the color coordinate and fetch the packed 64-bit palette
+        // entry for this temporal slice (density and Y live in the high
+        // half, U and V in the low half). The legacy surface-reference
+        // lookup this replaces was removed in CUDA 12.
+        float palcolorf = cc * 255.0f + color_dither;
+        uint32_t palcolor = (uint32_t)
+                rintf(fminf(fmaxf(palcolorf, 0.0f), 255.0f));
+        const uint2 pal_px = flatpal[(size_t)time * 256 + palcolor];
+        uint64_t pal_val = ((uint64_t)pal_px.y << 32) | pal_px.x;
+
         asm volatile ({{crep("""
 {
     // To prevent overflow, we need to flush each pixel before the density
@@ -338,18 +349,12 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     // former contents to floats, and adds them to the float4 buffer.
 
     .reg .pred  p, h;
-    .reg .u32   off, hotmap, color, hi, lo, d, y, u, v;
-    .reg .f32   colorf, yf, uf, vf, df, mult, prob;
+    .reg .u32   off, hotmap, hi, lo, d, y, u, v;
+    .reg .f32   yf, uf, vf, df, mult, prob;
     .reg .u64   ptr, val;
 
-    // TODO: coord dithering better, or pre-supersampled palette?
-    fma.rn.ftz.f32      colorf, %0,     255.0,  %1;
-    cvt.rni.u32.f32     color,  colorf;
-    shl.b32             color,  color,  3;
-
-    // Load the pre-packed 64-bit uint from the palette surf
-    suld.b.2d.v2.b32.clamp      {lo, hi},   [flatpal, {color, %2}];
-    mov.b64             val,    {lo, hi};
+    // Load the pre-packed 64-bit uint from the palette buffer
+    mov.b64             val,    %8;
 
     // Calculate the output address in the atomic integer accumulator
     shl.b32             off,    %3,     3;
@@ -384,8 +389,8 @@ iter(uint64_t out_ptr, uint64_t atom_ptr,
     // them to the floating-point buffer.
     shr.u32             d,      hi,     22;
     bfe.u32             y,      hi,     4,      18;
-    bfe.u32             u,      lo,     18,     14;
-    bfi.b32             u,      hi,     u,      14,     4;
+    bfe.u32             u,      lo,     18,      14;
+    bfi.b32             u,      hi,     u,      14,      4;
     and.b32             v,      lo,     ((1<<18)-1);
     cvt.rn.f32.u32      yf,     y;
     cvt.rn.f32.u32      uf,     u;
@@ -408,7 +413,7 @@ oflow_end:
 }
         """)}}  ::  "f"(cc), "f"(color_dither), "r"(time), "r"(i),
                     "l"(atom_ptr), "f"(cosel[threadIdx.y + {{NWARPS}}]),
-                    "l"(out_ptr), "f"(hotspot_mult));
+                    "l"(out_ptr), "f"(hotspot_mult), "l"(pal_val));
     }
 
     this_rb_idx = rb_incr(rb->tail, blockDim.x * threadIdx.y + threadIdx.x);
@@ -484,11 +489,11 @@ __global__ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr,
     // Vote on whether this thread's point passes the (for now, predetermined)
     // thresholds for each mask step
     setp.gt.f32         p,      dg,     128.0;
-    vote.ballot.b32     bal1,   p;
+    vote.sync.ballot.b32 bal1, p, 0xffffffff;
     setp.gt.f32         p,      dg,     512.0;
-    vote.ballot.b32     bal2,   p;
+    vote.sync.ballot.b32 bal2, p, 0xffffffff;
     setp.gt.f32         p,      dg,     2048.0;
-    vote.ballot.b32     bal3,   p;
+    vote.sync.ballot.b32 bal3, p, 0xffffffff;
 
     // Set 'q' with true if we're a low bit
     mov.b32             tidx,   %laneid;
@@ -512,7 +517,7 @@ __global__ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr,
     setp.and.eq.u32     p,      tbit,   tbit2,  p;
 @q  setp.gt.u32         p,      tbit,   0;
 
-    vote.ballot.b32     outlo,  p;
+    vote.sync.ballot.b32 outlo, p, 0xffffffff;
 
     // Repeat this process for the high half of the warp
     shl.b32             mask,   mask,   16;
@@ -523,7 +528,7 @@ __global__ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr,
     setp.and.eq.u32     p,      tbit,   tbit2,  p;
 @q  setp.gt.u32         p,      tbit,   0;
 
-    vote.ballot.b32     outhi,  p;
+    vote.sync.ballot.b32 outhi, p, 0xffffffff;
 
     // Set 'p' with whether we're the low or high bit of this warp
     mov.b32             tidy,   %tid.y;
@@ -546,7 +551,7 @@ __global__ void flush_atom(uint64_t out_ptr, uint64_t atom_ptr,
 
 def iter_body(cp):
     tmpl = Template(iter_body_code, 'iter_body')
-    NWARPS = NTHREADS / 32
+    NWARPS = NTHREADS // 32
 
     # TODO: detect this properly and use it
     chaos_used = False
@@ -569,7 +574,6 @@ def mkiterlib(gnm):
     packer_lib = packer.finalize()
 
     lib = devlib(deps=[packer_lib, mwclib, ringbuflib],
-                 # We grab the surf decl from palintlib as well
-                 decls=iter_decls + interp.palintlib.decls,
-                 defs='\n'.join(bodies))
+                  decls=iter_decls,
+                  defs='\n'.join(bodies))
     return packer, lib

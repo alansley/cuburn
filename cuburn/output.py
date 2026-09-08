@@ -2,15 +2,15 @@ import io
 import os
 import sys
 import tempfile
-from cStringIO import StringIO
+from io import BytesIO
 from subprocess import Popen, PIPE
 import numpy as np
 from numpy import float32 as f32, int32 as i32
 
 import pycuda.driver as cuda
 
-from code.util import ClsMod, launch
-from code.output import pixfmtlib
+from .code.util import ClsMod, launch
+from .code.output import pixfmtlib
 
 
 try:
@@ -70,12 +70,9 @@ class PILOutput(Output, ClsMod):
     lib = pixfmtlib
 
     def __init__(self, codec='jpeg', quality=100, alpha=False):
-        import scipy.misc
-        if not hasattr(scipy.misc, 'toimage'):
-            raise ImportError("Could not find scipy.misc.toimage. "
-                              "Are scipy and PIL installed?")
-
+        import PIL.Image
         super(PILOutput, self).__init__()
+        self._Image = PIL.Image
         self.type, self.quality, self.alpha = codec, quality, alpha
 
     def convert(self, fb, gnm, dim, stream=None):
@@ -88,9 +85,14 @@ class PILOutput(Output, ClsMod):
         return h_out
 
     def _convert_buf(self, buf):
-        import scipy.misc
-        out = StringIO()
-        img = scipy.misc.toimage(buf, cmin=0, cmax=1)
+        out = BytesIO()
+        # scipy.misc.toimage (removed in modern scipy) passed uint8 data
+        # through untouched, and only scaled float inputs using cmin/cmax
+        if buf.dtype == np.uint8:
+            arr = buf
+        else:
+            arr = np.uint8(np.round(np.clip(buf, 0, 1) * 255))
+        img = self._Image.fromarray(arr)
         img.save(out, self.type, quality=self.quality)
         out.seek(0)
         return out
@@ -102,7 +104,7 @@ class PILOutput(Output, ClsMod):
             if self.alpha:
                 alpha = self._convert_buf(buf[:,:,3])
                 return {'_color.jpg': out, '_alpha.jpg': alpha}, []
-            return {'.jpg': out}, {}
+            return {'.jpg': out}, []
         return {'.'+self.type: self._convert_buf(buf)}, []
 
 class TiffOutput(Output, ClsMod):
@@ -110,8 +112,6 @@ class TiffOutput(Output, ClsMod):
 
     def __init__(self, alpha=False):
         import tifffile
-        if 'filename' in tifffile.TiffWriter.__init__.__func__.func_doc:
-            raise EnvironmentError('tifffile version too old!')
         super(TiffOutput, self).__init__()
         self.alpha = alpha
 
@@ -157,7 +157,7 @@ class ProResOutput(Output, ClsMod):
         return h_out
 
     def _spawn(self):
-        self._outf = tempfile.NamedTemporaryFile(bufsize=0, suffix='mov')
+        self._outf = tempfile.NamedTemporaryFile(suffix='mov')
         cmd = ('ffmpeg -loglevel panic -f rawvideo -pix_fmt yuv444p12le '
                '-s {w}x{h} -r {fps} -i - -c:v prores -f mov -y {fn}').format(
                        w=self._dim.w, h=self._dim.h, fps=self.fps,
@@ -172,7 +172,7 @@ class ProResOutput(Output, ClsMod):
         if self._subp.returncode:
             raise IOError("ffmpeg exited with an error")
         # get a new handle, delete the named file
-        outf = open(self._outf.name)
+        outf = open(self._outf.name, 'rb')
         self._outf.close()
         self._outf, self._subp = None, None
         return {'.mov': outf}, []
@@ -182,7 +182,7 @@ class ProResOutput(Output, ClsMod):
             return self._flush()
         if not self._subp:
             self._spawn()
-        self._subp.stdin.write(buffer(host_frame))
+        self._subp.stdin.write(memoryview(host_frame))
         return {}, []
 
 
@@ -236,7 +236,7 @@ class X264Output(Output, ClsMod):
         self.outf, self.subp = self._spawn_sub(framesize, False)
         if self.alpha:
             self.aoutf, self.asubp = self._spawn_sub(framesize, True)
-            bufsz = framesize[0] * framesize[1] / 2
+            bufsz = framesize[0] * framesize[1] // 2
             self.zeros = np.empty(bufsz, dtype='u2')
             self.zeros.fill(32767)
 
@@ -272,10 +272,10 @@ class X264Output(Output, ClsMod):
 
     def _write(self, buf, subp):
         try:
-            subp.stdin.write(buffer(buf))
-        except IOError, e:
-            print >> sys.stderr, 'Exception while writing. Log:'
-            print >> sys.stderr, subp.stderr.read()
+            subp.stdin.write(memoryview(buf))
+        except IOError as e:
+            print('Exception while writing. Log:', file=sys.stderr)
+            print(subp.stderr.read(), file=sys.stderr)
             raise e
 
     def encode(self, buf):
@@ -288,8 +288,8 @@ class X264Output(Output, ClsMod):
             self._spawn(buf.shape[:2])
         self._write(np.delete(buf, 3, axis=2), self.subp)
         if self.alpha:
-            self._write(buf[:,:,3].tostring(), self.asubp)
-            self._write(buffer(self.zeros), self.asubp)
+            self._write(buf[:,:,3].tobytes(), self.asubp)
+            self._write(self.zeros, self.asubp)
         return out
 
 class VPxOutput(Output, ClsMod):
@@ -346,7 +346,7 @@ class VPxOutput(Output, ClsMod):
             fmt = 'u2'
         dims =  (3, dim.h, dim.w)
         if self.pix_fmt == 'yuv420p10':
-            dims = (dim.h * dim.w * 6 / 4,)
+            dims = (dim.h * dim.w * 6 // 4,)
         h_out = pool.allocate(dims, fmt)
         cuda.memcpy_dtoh_async(h_out, fb.d_back, stream)
         return h_out
@@ -357,8 +357,8 @@ class VPxOutput(Output, ClsMod):
         if num_columns:
             extras.append('--tile-columns=%d' % num_columns)
 
-        self.outf = tempfile.TemporaryFile(bufsize=0)
-        self.subp = Popen(map(str, self.args + extras),
+        self.outf = tempfile.TemporaryFile()
+        self.subp = Popen([str(a) for a in self.args + extras],
                           stdin=PIPE, stderr=PIPE, stdout=self.outf)
 
     def _flush_sub(self, subp):
@@ -387,10 +387,10 @@ class VPxOutput(Output, ClsMod):
 
     def _write(self, buf, subp):
         try:
-            subp.stdin.write(buffer(buf))
-        except IOError, e:
-            print >> sys.stderr, 'Exception while writing. Log:'
-            print >> sys.stderr, subp.stderr.read()
+            subp.stdin.write(memoryview(buf))
+        except IOError as e:
+            print('Exception while writing. Log:', file=sys.stderr)
+            print(subp.stderr.read(), file=sys.stderr)
             raise e
 
     def encode(self, buf):
@@ -401,9 +401,9 @@ class VPxOutput(Output, ClsMod):
             self._spawn()
         if self.pix_fmt == 'yuv420p':
             # Perform terrible chroma subsampling
-            self._write(buf[0].tostring(), self.subp)
-            self._write(buf[1,::2,::2].tostring(), self.subp)
-            self._write(buf[2,::2,::2].tostring(), self.subp)
+            self._write(buf[0].tobytes(), self.subp)
+            self._write(buf[1,::2,::2].tobytes(), self.subp)
+            self._write(buf[2,::2,::2].tobytes(), self.subp)
         else:
             self._write(buf, self.subp)
         return out

@@ -3,7 +3,7 @@ import numpy as np
 from hashlib import sha1
 
 from cuburn.code.util import crep
-import spectypes
+from . import spectypes
 
 def get(dct, default, *keys):
     if len(keys) == 1:
@@ -62,7 +62,7 @@ def hash(gnm):
     # easy, since the only thing which we depend on when compiling is the
     # presence or absence of certain keys, but enumerated parameters may play
     # into it at some point in the future.
-    return sha1('\n'.join(flatten(gnm).keys())).hexdigest()
+    return sha1('\n'.join(flatten(gnm).keys()).encode()).hexdigest()
 
 def resolve_spec(sp, path):
     for name in path:
@@ -81,7 +81,7 @@ def palette_decode(datastrs):
     if datastrs[0] != 'rgb8':
         raise NotImplementedError
     raw = base64.b64decode(''.join(datastrs[1:]))
-    pal = np.reshape(np.fromstring(raw, np.uint8), (256, 3))
+    pal = np.reshape(np.frombuffer(raw, np.uint8), (256, 3))
     data = np.ones((256, 4), np.float32)
     data[:,:3] = pal / 255.0
     return data
@@ -93,7 +93,7 @@ def palette_encode(data, format='rgb8'):
     if format != 'rgb8':
         raise NotImplementedError
     clamp = np.maximum(0, np.minimum(255, np.round(data[:,:3]*255.0)))
-    enc = base64.b64encode(np.uint8(clamp))
+    enc = base64.b64encode(clamp.astype(np.uint8).tobytes()).decode('ascii')
     return ['rgb8'] + [enc[i:i+64] for i in range(0, len(enc), 64)]
 
 def json_encode(obj):
@@ -122,7 +122,8 @@ def _js_enc_obj(obj, indent=0):
     if isinstance(obj, dict):
         if not obj:
             return '{}'
-        digsort = lambda kv: (int(kv[0]), kv[1]) if kv[0].isdigit() else kv
+        digsort = lambda kv: ((0, int(kv[0])) if kv[0].isdigit()
+                              else (1, kv[0], kv[1]))
         ks, vs = zip(*sorted(obj.items(), key=digsort))
         if ks == ('b', 'g', 'r'):
             ks, vs = reversed(ks), reversed(vs)
@@ -132,11 +133,11 @@ def _js_enc_obj(obj, indent=0):
     elif isinstance(obj, list):
         vs = [_js_enc_obj(v, indent+2) for v in obj]
         if vs and len(vs) % 2 == 0 and isnum(obj[1]):
-            vs = map(', '.join, zip(vs[::2], vs[1::2]))
+            vs = list(map(', '.join, zip(vs[::2], vs[1::2])))
         return wrap(vs, '[]')
     #elif isinstance(obj, SplEval):
         #return _js_enc_obj(obj.knotlist, indent)
-    elif isinstance(obj, basestring):
+    elif isinstance(obj, str):
         return crep(obj)
     elif isnum(obj):
         return '%.6g' % obj

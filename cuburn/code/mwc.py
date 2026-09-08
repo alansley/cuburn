@@ -6,7 +6,7 @@ import os
 import warnings
 import numpy as np
 
-from util import devlib, assemble_code
+from .util import devlib, assemble_code
 
 # Keeping this live in the module isn't necessary, but loading the mults
 # can be surprisingly slow.
@@ -15,12 +15,12 @@ mults = None
 def load_mults():
     pfpath = os.path.join(os.path.dirname(__file__), 'primes.bin')
     if os.path.isfile(pfpath):
-        with open(pfpath) as fp:
+        with open(pfpath, 'rb') as fp:
             return np.frombuffer(fp.read(), dtype='<u4')
 
     warnings.warn('primes.bin not found, trying to download it')
-    import bz2, urllib2
-    ufp = urllib2.urlopen('http://aduro.strobe.cc/primes.diff.bin.bz2')
+    import bz2, urllib.request
+    ufp = urllib.request.urlopen('http://aduro.strobe.cc/primes.diff.bin.bz2')
     diffs = np.frombuffer(bz2.decompress(ufp.read()), dtype='<u2')
     mults = np.cumsum(-np.array(diffs, dtype='<u4'), dtype='<u4')
     with open(pfpath, 'wb') as fp:
@@ -99,7 +99,7 @@ def test_mwc(rounds=5000, nblocks=64, blockwidth=512):
     mod = SourceModule(assemble_code(mwctestlib))
 
     for trial in range(2):
-        print "Trial %d, on CPU: " % trial,
+        print('Trial %d, on CPU: ' % trial, end=' ')
         sums = np.zeros(nthreads, dtype=np.uint64)
         ctime = time.time()
         mults = seeds[:,0].astype(np.uint64)
@@ -113,20 +113,20 @@ def test_mwc(rounds=5000, nblocks=64, blockwidth=512):
             sums += states
 
         ctime = time.time() - ctime
-        print "Took %g seconds." % ctime
+        print('Took %g seconds.' % ctime)
 
-        print "Trial %d, on device: " % trial,
+        print('Trial %d, on device: ' % trial, end=' ')
         dsums = cuda.mem_alloc(8*nthreads)
         fun = mod.get_function("test_mwc")
         dtime = fun(dseeds, dsums, np.float32(rounds),
                     block=(blockwidth,1,1), grid=(nblocks,1),
                     time_kernel=True)
-        print "Took %g seconds." % dtime
+        print('Took %g seconds.' % dtime)
         dsums = cuda.from_device(dsums, nthreads, np.uint64)
         if not np.all(np.equal(sums, dsums)):
-            print "Sum discrepancy!"
-            print sums
-            print dsums
+            print('Sum discrepancy!')
+            print(sums)
+            print(dsums)
 
 if __name__ == "__main__":
     import pycuda.autoinit

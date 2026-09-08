@@ -5,8 +5,8 @@ import pycuda.driver as cuda
 import pycuda.compiler
 from pycuda.gpuarray import vec
 
-import code.filters
-from code.util import ClsMod, argset, launch2, mktref
+from .code import filters as code_filters
+from .code.util import ClsMod, launch2
 
 def set_blur_width(mod, pool, stdev=1, stream=None):
     coefs = pool.allocate((7,), f32)
@@ -14,11 +14,6 @@ def set_blur_width(mod, pool, stdev=1, stream=None):
     coefs /= np.sum(coefs)
     ptr, size = mod.get_global('gauss_coefs')
     cuda.memcpy_htod_async(ptr, coefs, stream)
-
-def mkdsc(dim, ch):
-    return argset(cuda.ArrayDescriptor(), height=dim.ah,
-                  width=dim.astride, num_channels=ch,
-                  format=cuda.array_format.FLOAT)
 
 class Filter(object):
     filter_map = {}
@@ -45,7 +40,7 @@ class Filter(object):
 
 @Filter.register('yuv')
 class YuvFilterLib(Filter, ClsMod):
-    lib = code.filters.yuvfilterlib
+    lib = code_filters.yuvfilterlib
 
     def apply(self, fb, gprof, params, dim, tc, stream=None):
         launch2('yuv_to_rgb', self.mod, stream, dim,
@@ -55,19 +50,12 @@ class YuvFilterLib(Filter, ClsMod):
 
 @Filter.register('bilateral')
 class Bilateral(Filter, ClsMod):
-    lib = code.filters.bilaterallib
+    lib = code_filters.bilaterallib
     radius = 15
     directions = 8
 
     def apply(self, fb, gprof, params, dim, tc, stream=None):
-        # Helper variables and functions to keep it clean
-        sb = 16 * dim.astride
-        bs = sb * dim.ah
-
-        dsc = mkdsc(dim, 4)
-        tref = mktref(self.mod, 'chan4_src')
-        grad_dsc = mkdsc(dim, 1)
-        grad_tref = mktref(self.mod, 'chan1_src')
+        # Helper variables to keep it clean
         set_blur_width(self.mod, fb.pool, stream=stream)
 
         for pattern in range(self.directions):
@@ -75,28 +63,26 @@ class Bilateral(Filter, ClsMod):
             # actual pixel at 1080p
             sstd = params.spatial_std(tc) * dim.w / 1920.
 
-            tref.set_address_2d(fb.d_front, dsc, sb)
-
             # Blur density two octaves along sampling vector, ultimately
             # storing in the side buffer
             launch2('den_blur', self.mod, stream, dim,
-                    fb.d_back, i32(pattern), i32(0), texrefs=[tref])
-            grad_tref.set_address_2d(fb.d_back, grad_dsc, sb / 4)
+                    fb.d_front, fb.d_back, i32(pattern), i32(0),
+                    i32(dim.astride), i32(dim.ah))
             launch2('den_blur_1c', self.mod, stream, dim,
-                    fb.d_left, i32(pattern), i32(1), texrefs=[grad_tref])
-            grad_tref.set_address_2d(fb.d_left, grad_dsc, sb / 4)
-
+                    fb.d_back, fb.d_left, i32(pattern), i32(1),
+                    i32(dim.astride), i32(dim.ah))
             launch2('bilateral', self.mod, stream, dim,
-                    fb.d_back, i32(pattern), i32(self.radius),
+                    fb.d_back, fb.d_front, fb.d_left,
+                    i32(pattern), i32(self.radius),
                     f32(sstd), f32(params.color_std(tc)),
                     f32(params.density_std(tc)), f32(params.density_pow(tc)),
                     f32(params.gradient(tc)),
-                    texrefs=[tref, grad_tref])
+                    i32(dim.astride), i32(dim.ah))
             fb.flip()
 
 @Filter.register('logscale')
 class Logscale(Filter, ClsMod):
-    lib = code.filters.logscalelib
+    lib = code_filters.logscalelib
     def apply(self, fb, gprof, params, dim, tc, stream=None):
         """Log-scale in place."""
         k1 = f32(params.brightness(tc) * 268 / 256)
@@ -109,22 +95,19 @@ class Logscale(Filter, ClsMod):
 
 @Filter.register('haloclip')
 class HaloClip(Filter, ClsMod):
-    lib = code.filters.halocliplib
+    lib = code_filters.halocliplib
     def apply(self, fb, gprof, params, dim, tc, stream=None):
         gam = f32(1 / gprof.filters.colorclip.gamma(tc) - 1)
-
-        dsc = mkdsc(dim, 1)
-        tref = mktref(self.mod, 'chan1_src')
 
         set_blur_width(self.mod, fb.pool, stream=stream)
         launch2('apply_gamma', self.mod, stream, dim,
                 fb.d_left, fb.d_front, f32(0.1))
-        tref.set_address_2d(fb.d_left, dsc, 4 * dim.astride)
         launch2('den_blur_1c', self.mod, stream, dim,
-               fb.d_back, i32(2), i32(0), texrefs=[tref])
-        tref.set_address_2d(fb.d_back, dsc, 4 * dim.astride)
+                fb.d_left, fb.d_back, i32(2), i32(0),
+                i32(dim.astride), i32(dim.ah))
         launch2('den_blur_1c', self.mod, stream, dim,
-               fb.d_left, i32(3), i32(0), texrefs=[tref])
+                fb.d_back, fb.d_left, i32(3), i32(0),
+                i32(dim.astride), i32(dim.ah))
 
         launch2('haloclip', self.mod, stream, dim,
                 fb.d_front, fb.d_left, gam)
@@ -138,33 +121,31 @@ def calc_lingam(params, tc):
 @Filter.register('smearclip')
 class SmearClip(Filter, ClsMod):
     full_side = True
-    lib = code.filters.smearcliplib
+    lib = code_filters.smearcliplib
     def apply(self, fb, gprof, params, dim, tc, stream=None):
         gam, lin, lingam = calc_lingam(gprof.filters.colorclip, tc)
-        dsc = mkdsc(dim, 4)
-        tref = mktref(self.mod, 'chan4_src')
 
         set_blur_width(self.mod, fb.pool, params.width(tc), stream)
         launch2('apply_gamma_full_hi', self.mod, stream, dim,
                 fb.d_left, fb.d_front, f32(gam-1))
-        tref.set_address_2d(fb.d_left, dsc, 16 * dim.astride)
         launch2('full_blur', self.mod, stream, dim,
-               fb.d_back, i32(2), i32(0), texrefs=[tref])
-        tref.set_address_2d(fb.d_back, dsc, 16 * dim.astride)
+                fb.d_left, fb.d_back, i32(2), i32(0),
+                i32(dim.astride), i32(dim.ah))
         launch2('full_blur', self.mod, stream, dim,
-               fb.d_left, i32(3), i32(0), texrefs=[tref])
-        tref.set_address_2d(fb.d_left, dsc, 16 * dim.astride)
+                fb.d_back, fb.d_left, i32(3), i32(0),
+                i32(dim.astride), i32(dim.ah))
         launch2('full_blur', self.mod, stream, dim,
-               fb.d_back, i32(0), i32(0), texrefs=[tref])
-        tref.set_address_2d(fb.d_back, dsc, 16 * dim.astride)
+                fb.d_left, fb.d_back, i32(0), i32(0),
+                i32(dim.astride), i32(dim.ah))
         launch2('full_blur', self.mod, stream, dim,
-               fb.d_left, i32(1), i32(0), texrefs=[tref])
+                fb.d_back, fb.d_left, i32(1), i32(0),
+                i32(dim.astride), i32(dim.ah))
         launch2('smearclip', self.mod, stream, dim,
                 fb.d_front, fb.d_left, f32(gam-1), lin, lingam)
 
 @Filter.register('colorclip')
 class ColorClip(Filter, ClsMod):
-    lib = code.filters.colorcliplib
+    lib = code_filters.colorcliplib
     def apply(self, fb, gprof, params, dim, tc, stream=None):
         vib = f32(params.vibrance(tc))
         hipow = f32(params.highlight_power(tc))
@@ -175,7 +156,7 @@ class ColorClip(Filter, ClsMod):
 
 @Filter.register('plainclip')
 class PlainClip(Filter, ClsMod):
-    lib = code.filters.plaincliplib
+    lib = code_filters.plaincliplib
     def apply(self, fb, gprof, params, dim, tc, stream=None):
         gam, lin, lingam = calc_lingam(gprof.filters.colorclip, tc)
         launch2('plainclip', self.mod, stream, dim,
@@ -185,7 +166,7 @@ class PlainClip(Filter, ClsMod):
 
 @Filter.register('logencode')
 class LogEncode(Filter, ClsMod):
-    lib = code.filters.logencodelib
+    lib = code_filters.logencodelib
     def apply(self, fb, gprof, params, dim, tc, stream=None):
         degamma = f32(params.degamma(tc))
 

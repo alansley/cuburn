@@ -17,7 +17,6 @@ monkey.patch_all()
 import json
 import warnings
 from subprocess import Popen
-from itertools import ifilter
 from collections import namedtuple
 
 import numpy as np
@@ -66,7 +65,7 @@ def copy_filelike(infp, dst):
     chunk_sz = int(min(1024 * 1024, sz - recvd))
     chunk = infp.read(chunk_sz)
     assert len(chunk) == chunk_sz, (
-        'Incomplete chunk, expected %d (%s)got %d' % (sz, `sz_buf`, len(chunk)))
+        'Incomplete chunk, expected %d (%s) got %d' % (sz, repr(sz_buf), len(chunk)))
     dst.write(chunk)
     recvd += len(chunk)
 
@@ -115,8 +114,8 @@ def work(args):
       else:
         evt.synchronize()
       last_render_time_ms = evt.time()
-      print >> sys.stderr, '%30s: %s (%3d/%3d), %dms' % (
-          addr, name, idx, len(times), last_render_time_ms)
+      print('%30s: %s (%3d/%3d), %dms' % (
+          addr, name, idx, len(times), last_render_time_ms), file=sys.stderr)
       sys.stderr.flush()
 
       save(buf)
@@ -140,8 +139,9 @@ def dispatch(args):
       traceback.print_exc()
       pass
   if not workers:
-    print >> sys.stderr, ('No workers defined. Pass --workers or set up '
-                          '~/.cuburn-workers with one worker per line.')
+    print(('No workers defined. Pass --workers or set up '
+                          '~/.cuburn-workers with one worker per line.'),
+          file=sys.stderr)
     sys.exit(1)
 
   gdb = db.connect(args.genomedb)
@@ -215,7 +215,7 @@ def dispatch(args):
             break
         worker_failure_counts[addr] = 0
       except:
-        print >> sys.stderr, traceback.format_exc()
+        print(traceback.format_exc(), file=sys.stderr)
         worker_failure_counts[addr] = worker_failure_counts.get(addr, 0) + 1
         if job.retry_count < 3:
           job_queue.put(Job(job.genome, job.name, job.times, job.retry_count + 1))

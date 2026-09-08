@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import base64
 import binascii
@@ -6,12 +6,12 @@ import warnings
 import xml.parsers.expat
 import numpy as np
 
-from variations import var_params
-import util
+from .variations import var_params
+from . import util
 
 # Re-exported, since it makes the namespace nice and regular
-from blend import node_to_anim, edge_to_anim
-from util import json_encode as to_json
+from .blend import node_to_anim, edge_to_anim
+from .util import json_encode as to_json
 
 class XMLGenomeParser(object):
     """
@@ -39,7 +39,6 @@ class XMLGenomeParser(object):
                 # Color sometimes has an extra param that is unused by flam3
                 attrs['color'] = attrs['color'].strip().split()[0]
             self._flame['xforms'].append(dict(attrs))
-            self._flame['xforms']
         elif name == 'finalxform':
             self._flame['finalxform'] = dict(attrs)
         elif name == 'color':
@@ -78,7 +77,7 @@ class XMLPaletteParser(object):
         if name == 'palette':
             data = binascii.a2b_hex(
                     attrs['data'].replace('\n', '').replace(' ', ''))
-            pal = np.fromstring(data, 'u1').reshape((256, 4)) / 255.0
+            pal = np.frombuffer(data, np.uint8).reshape((256, 4)) / 255.0
             if 'number' in attrs:
                 self.numbers[int(attrs['number'])] = pal
             if 'name' in attrs:
@@ -112,7 +111,7 @@ class XMLPaletteParser(object):
             return np.array(cls._numbers[key])
 
 def convert_affine(aff, animate=False):
-    xx, yx, xy, yy, xo, yo = vals = map(float, aff.split())
+    xx, yx, xy, yy, xo, yo = vals = list(map(float, aff.split()))
     if vals == [1, 0, 0, 1, 0, 0]: return None
 
     # Cuburn's IFS-space vertical direction is inverted with respect to flam3,
@@ -244,4 +243,4 @@ def nodes_from_xml_path(path):
 
 if __name__ == "__main__":
     import sys
-    print '\n\n'.join(map(to_json, nodes_from_xml_path(sys.argv[1])))
+    print('\n\n'.join(map(to_json, nodes_from_xml_path(sys.argv[1]))))

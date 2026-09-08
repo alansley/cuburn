@@ -1,6 +1,6 @@
 import numpy as np
 
-from util import devlib
+from .util import devlib
 
 # The JPEG YUV full-range matrix, without bias into the positve regime.
 # This assumes input color space is CIERGB D65, encoded with gamma 2.2.

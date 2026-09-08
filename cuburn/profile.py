@@ -3,9 +3,9 @@ import json
 import argparse
 import numpy as np
 
-from genome.specs import toplevels
-from genome.use import RefWrapper, SplineWrapper
-import output
+from .genome.specs import toplevels
+from .genome.use import RefWrapper, SplineWrapper
+from . import output
 
 BUILTIN={
     '1080p': dict(width=1920, height=1080),
@@ -21,7 +21,7 @@ def add_args(parser=None):
     """
     parser = argparse.ArgumentParser() if parser is None else parser
     prof = parser.add_argument_group('Profile options')
-    prof.add_argument('-P', '--builtin-profile', choices=BUILTIN.keys(),
+    prof.add_argument('-P', '--builtin-profile', choices=sorted(BUILTIN.keys()),
         help='Set parameters below from a builtin profile. (default: 720p)',
         default='720p')
     prof.add_argument('-p', '--profile', type=argparse.FileType(),

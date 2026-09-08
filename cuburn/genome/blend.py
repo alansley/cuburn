@@ -5,13 +5,11 @@
 
 import numpy as np
 from copy import deepcopy
-from itertools import izip_longest
+from itertools import zip_longest
 
-import spectypes
-import specs
-from use import Wrapper
-from util import get, json_encode, resolve_spec, flatten, unflatten
-import variations
+from . import spectypes, specs, variations
+from .use import Wrapper
+from .util import get, json_encode, resolve_spec, flatten, unflatten
 
 def node_to_anim(gdb, node, half):
     node = resolve(gdb, node)
@@ -43,7 +41,7 @@ def resolve(gdb, item):
         if i.get('base') is not None:
             return go(gdb.get(i['base'])) + [i]
         return [i]
-    items = map(flatten, go(item))
+    items = list(map(flatten, go(item)))
     out = {}
 
     for k in set(ik for i in items for ik in i.keys()):
@@ -140,7 +138,7 @@ def merge_edits(sv, av, bv):
         av, bv = av or {}, bv or {}
         getsv = lambda k: sv.type if isinstance(sv, spectypes.Map) else sv[k]
         return dict([(k, merge_edits(getsv(k), av.get(k), bv.get(k)))
-                     for k in set(av.keys() + bv.keys())])
+                     for k in set(list(av.keys()) + list(bv.keys()))])
     elif isinstance(sv, (spectypes.List, spectypes.Spline)):
         return (av or []) + (bv or [])
     else:
@@ -192,15 +190,16 @@ def tospline(spl, src, dst, edit, duration):
     return sp
 
 def trace(k, cond=True):
-    print k,
+    print(k, end=' ')
     return k
 
 def merge_nodes(sp, src, dst, edit, duration):
     if isinstance(sp, dict):
-        src, dst, edit = [x or {} for x in src, dst, edit]
+        src, dst, edit = [x or {} for x in (src, dst, edit)]
         return dict([(k, merge_nodes(sp[k], src.get(k),
                                      dst.get(k), edit.get(k), duration))
-            for k in set(src.keys() + dst.keys() + edit.keys()) if k in sp])
+            for k in (set(list(src.keys()) + list(dst.keys()) +
+                          list(edit.keys()))) if k in sp])
     elif isinstance(sp, spectypes.Spline):
         return tospline(sp, src, dst, edit, duration)
     elif isinstance(sp, spectypes.List):
@@ -296,12 +295,12 @@ def sort_xforms(sxfs, dxfs, sortmethod, explicit=[]):
             sortf = halfhearted_human_sort_key
         return sorted(keys, key=sortf)
 
-    for cl in set(scl.keys() + dcl.keys()):
+    for cl in set(list(scl.keys()) + list(dcl.keys())):
         ssort = sort(scl.get(cl, []), sxfs)
         dsort = sort(dcl.get(cl, []), dxfs)
         if sortmethod == 'weightflip':
             dsort = reversed(dsort)
-        for sd in izip_longest(ssort, dsort):
+        for sd in zip_longest(ssort, dsort):
             yield sd
 
 def checkpalflip(gnm):
@@ -330,4 +329,4 @@ def palflip(gnm):
 if __name__ == "__main__":
     import sys, json
     a, b, c = [json.load(open(f+'.json')) for f in 'abc']
-    print json_encode(blend(a, b, c))
+    print(json_encode(blend(a, b, c)))

@@ -1,7 +1,7 @@
 import numpy as np
 
-from spectypes import Enum, Spline, Scalar, RefScalar, Map, List
-from specs import toplevels
+from .spectypes import Enum, Spline, Scalar, RefScalar, Map, List
+from .specs import toplevels
 
 class Wrapper(object):
     """
@@ -138,7 +138,7 @@ class SplineEval(object):
             knots = [(0, knots[0]), (1, knots[1])]
         else:
             p0, v0, p1, v1 = knots[:4]
-            knots = [(0, p0), (1, p1)] + zip(knots[4::2], knots[5::2])
+            knots = [(0, p0), (1, p1)] + list(zip(knots[4::2], knots[5::2]))
         v0 *= scale
         v1 *= scale
 
@@ -194,7 +194,7 @@ class SplineEval(object):
         r = x[1] - x[0]
         plt.figure(fig)
         plt.title(name)
-        plt.plot(x,map(self,x),x,[self(i,1) for i in x],'--',
+        plt.plot(x, list(map(self, x)), x, [self(i,1) for i in x],'--',
                  self.knots[0],self.knots[1],'x')
         plt.xlim(0.0, 1.0)
         if show:

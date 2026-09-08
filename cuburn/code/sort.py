@@ -542,25 +542,25 @@ class Sorter(object):
             evt_b = cuda.Event().record(stream)
             evt_b.synchronize()
             dur = evt_b.time_since(evt_a) / (rounds * trials)
-            print '%6.1f,\t%4.0f,\t%4.0f' % (dur, count / (dur * 1000),
-                    count * sorter.radix_bits / (dur * 32 * 1000))
+            print('%6.1f,\t%4.0f,\t%4.0f' % (dur, count / (dur * 1000),
+                    count * sorter.radix_bits / (dur * 32 * 1000)))
 
             if shift == 0 and correctness:
-                print '\nTesting correctness'
+                print('\nTesting correctness')
                 out = cuda.from_device(buf, (count,), np.uint32)
                 sort = np.sort(keys)
                 if np.all(out == sort):
-                    print 'Correct'
+                    print('Correct')
                 else:
                     nz = np.nonzero(out != sort)[0]
-                    print sorted(set(nz >> 13))
+                    print(sorted(set(nz >> 13)))
                     for i in nz:
-                        print i, out[i-1:i+2], sort[i-1:i+2]
+                        print(i, out[i-1:i+2], sort[i-1:i+2])
                     assert False, 'Oh no'
 
 
         for b in range(cls.radix_bits - 3):
-            print '%2d (%2d sig bits),\t' % (cls.radix_bits, cls.radix_bits - b),
+            print('%2d (%2d sig bits),\t' % (cls.radix_bits, cls.radix_bits - b), end=' ')
             test_stub(b)
 
         if not correctness:
@@ -568,9 +568,9 @@ class Sorter(object):
                 keys[:] = np.uint32(
                         np.random.randint(0, 1<<(cls.radix_bits*r), count))
                 cuda.memcpy_htod(dkeys, keys)
-                print '%2d x %d,\t\t\t' % (cls.radix_bits, r),
+                print('%2d x %d,\t\t\t' % (cls.radix_bits, r), end=' ')
                 test_stub(0, rounds=r)
-        print
+        print()
 
 if __name__ == "__main__":
     import sys
@@ -584,7 +584,7 @@ if __name__ == "__main__":
 
     correct = '-c' in sys.argv
     for g in (8192, 4096):
-        print '\n\n== GROUP SIZE %d ==,\t  msec,\tMK/s,\tMK/s norm' % g
+        print('\n\n== GROUP SIZE %d ==,\t  msec,\tMK/s,\tMK/s norm' % g)
         Sorter.group_size = g
         for b in [7,8,9,10]:
             if g == 4096 and b == 10: continue

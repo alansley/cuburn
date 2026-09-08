@@ -8,15 +8,15 @@ from collections import namedtuple
 try:
     import pycuda.driver as cuda
     import pycuda.compiler
-except ImportError, e:
+except ImportError as e:
     import traceback
     traceback.print_exc()
-    print 'Continuing without CUDA. Things will break.'
+    print('Continuing without CUDA. Things will break.')
 import numpy as np
 import tempita
 
-fst = lambda (a,b): a
-snd = lambda (a,b): b
+fst = lambda ab: ab[0]
+snd = lambda ab: ab[1]
 
 def argset(obj, **kwargs):
     """
@@ -49,7 +49,7 @@ def launch2(name, mod, stream, dim, *args, **kwargs):
     assume this launch pattern.
     """
     # 32 has a tied constant in the GET_IDX_2 macro definition below
-    block, grid = (32, 8, 1), (dim.astride / 32, dim.ah / 8)
+    block, grid = (32, 8, 1), (dim.astride // 32, dim.ah // 8)
     launch(name, mod, stream, block, grid, *args, **kwargs)
 
 def mktref(mod, n):
@@ -61,9 +61,8 @@ def mktref(mod, n):
 
 def crep(s):
     """Multiline literal escape for inline PTX assembly."""
-    if isinstance(s, unicode):
-        s = s.encode('utf-8')
-    return '"%s"' % s.encode("string_escape")
+    return '"%s"' % s.encode('unicode_escape').decode('ascii') \
+            .replace('"', '\\"')
 
 class Template(tempita.Template):
     """
@@ -84,16 +83,18 @@ def assemble_code(*libs):
     seen = set()
     out = []
     def go(lib):
-        map(go, lib.deps)
+        for dep in lib.deps:
+            go(dep)
         code = lib[1:]
         if code not in seen:
             seen.add(code)
             out.append(code)
     go(stdlib)
-    map(go, libs)
+    for lib in libs:
+        go(lib)
     return ''.join(sum(zip(*out), ()))
 
-DEFAULT_CMP_OPTIONS = ('-use_fast_math', '-lineinfo', '-ccbin', 'clang')
+DEFAULT_CMP_OPTIONS = ('-use_fast_math', '-lineinfo', '-ccbin', 'gcc-14')
 DEFAULT_SAVE_KERNEL = True
 def compile(name, src, opts=DEFAULT_CMP_OPTIONS, save=DEFAULT_SAVE_KERNEL,
             arch=None, keep=False):
@@ -108,7 +109,7 @@ def compile(name, src, opts=DEFAULT_CMP_OPTIONS, save=DEFAULT_SAVE_KERNEL,
     cubin = pycuda.compiler.compile(src, options=list(opts), arch=arch,
                                     keep=keep)
     if save:
-        with open(os.path.join(dir, name + '_kern.cubin'), 'w') as fp:
+        with open(os.path.join(dir, name + '_kern.cubin'), 'wb') as fp:
             fp.write(cubin)
     return cubin
 
@@ -257,7 +258,7 @@ def fill_dptr(mod, dptr, size, stream=None, value=np.uint32(0)):
         if isinstance(value, int):
             value = np.uint32(value)
         else:
-            value = np.frombuffer(buffer(value), np.uint32)[0]
+            value = np.frombuffer(memoryview(value), np.uint32)[0]
     blocks = int(np.ceil(np.sqrt(size / 1024.)))
     launch('fill_dptr', mod, stream, (1024, 1, 1), (blocks, blocks),
             dptr, np.int32(size), value)

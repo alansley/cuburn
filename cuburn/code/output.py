@@ -1,5 +1,5 @@
-from util import devlib, ringbuflib
-from mwc import mwclib
+from .util import devlib, ringbuflib
+from .mwc import mwclib
 
 pixfmtlib = devlib(deps=[ringbuflib, mwclib], defs=r'''
 // Clamp an input between 0 and a given peak (inclusive), dithering its output,

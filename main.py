@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #
 # cuburn, one of a surprisingly large number of ports of the fractal flame
 # algorithm to NVIDIA GPUs.
@@ -17,7 +17,6 @@ import json
 import warnings
 import argparse
 from subprocess import Popen
-from itertools import ifilter
 
 import numpy as np
 
@@ -29,7 +28,7 @@ def main(args, prof):
     gdb = db.connect(args.genomedb)
     gnm, basename = gdb.get_anim(args.flame, args.half)
     if getattr(args, 'print'):
-        print convert.to_json(gnm)
+        print(convert.to_json(gnm))
         return
     gprof = profile.wrap(prof, gnm)
     frames = profile.enumerate_jobs(gprof, basename, args)
@@ -52,13 +51,13 @@ def main(args, prof):
           def save(buf):
               out, log = rdr.out.encode(buf)
               for suffix, file_like in out.items():
-                  with open(name + suffix, 'w') as fp:
+                  with open(name + suffix, 'wb') as fp:
                       fp.write(file_like.read())
                   if getattr(file_like, 'close', None):
                       file_like.close()
               for key, val in log:
-                  print >> sys.stderr, '\n=== %s ===' % key
-                  print >> sys.stderr, val
+                  print('\n=== %s ===' % key, file=sys.stderr)
+                  print(val, file=sys.stderr)
 
           evt = buf = next_evt = next_buf = None
           for idx, t in enumerate(list(times) + [None]):
@@ -81,11 +80,12 @@ def main(args, prof):
                       os.rename(args.rawfn + '.tmp', args.rawfn)
                   except:
                       import traceback
-                      print >> sys.stderr, 'Failed to write %s: %s' % (
-                          args.rawfn, traceback.format_exc())
-              print >> sys.stderr, '%s%s (%3d/%3d), %dms' % (
-                  ('%d: ' % args.device) if args.device >= 0 else '',
-                  name, idx, len(times), last_render_time_ms)
+                      print('Failed to write %s: %s' % (
+                          args.rawfn, traceback.format_exc()), file=sys.stderr)
+              print('%s%s (%3d/%3d), %dms' % (
+                  ('%d: ' % args.device) if (args.device is not None and
+                                             args.device >= 0) else '',
+                  name, idx, len(times), last_render_time_ms), file=sys.stderr)
               sys.stderr.flush()
 
           save(None)
@@ -99,11 +99,11 @@ def list_devices():
   for i in range(cuda.Device.count()):
     dev = cuda.Device(i)
     attrs = dev.get_attributes()
-    print 'Device %d (%s): compute %d.%d, free mem %d, PCI %s' % (
+    print('Device %d (%s): compute %d.%d, free mem %d, PCI %s' % (
         i, dev.name(),
         attrs[cuda.device_attribute.COMPUTE_CAPABILITY_MAJOR],
         attrs[cuda.device_attribute.COMPUTE_CAPABILITY_MINOR],
-        dev.total_memory(), dev.pci_bus_id())
+        dev.total_memory(), dev.pci_bus_id()))
 
 
 if __name__ == "__main__":

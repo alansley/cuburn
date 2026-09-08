@@ -1,4 +1,4 @@
-from spectypes import spline, scalespline
+from .spectypes import spline, scalespline
 import numpy as np
 # Pre-instantiated default splines. Used a *lot*.
 s, ss, sz = spline(), scalespline(), scalespline(min=0)

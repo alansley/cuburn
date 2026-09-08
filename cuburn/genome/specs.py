@@ -1,5 +1,5 @@
-from spectypes import *
-from variations import var_params
+from .spectypes import *
+from .variations import var_params
 
 affine = (
   { 'angle': spline(45, period=360)
@@ -127,7 +127,7 @@ profile = (
   , 'width': Scalar(1280, 'Output width in pixels')
   , 'spp': RefScalar(2000, 'camera.spp', 'Base samples per pixel')
 
-  , 'filter_order': list_(enum(filters.keys()), default_filters)
+  , 'filter_order': list_(enum(sorted(filters.keys())), default_filters)
   , 'filters': prof_filters
 
   # The other keys in the 'output' dictionary are format-specific and not
