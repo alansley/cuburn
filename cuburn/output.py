@@ -223,7 +223,10 @@ class X264Output(Output, ClsMod):
         res = '%dx%d' % (framesize[1], framesize[0])
         csp = 'yv12' if alpha else 'rgb'
         extras = ['--input-csp', csp, '--demuxer', 'raw', '--input-res', res]
-        outf = tempfile.TemporaryFile(bufsize=0)
+        # Python 3 renamed this argument: TemporaryFile took `bufsize` in 2.x and takes
+        # `buffering` in 3.x, so the 2.x spelling is a hard TypeError rather than a warning.
+        # 0 means unbuffered, which is what the x264 pipe wants.
+        outf = tempfile.TemporaryFile(buffering=0)
         if alpha:
             extras += ['--output-csp', 'i420', '--chroma-qp-offset', '24']
         else:
